@@ -12,6 +12,7 @@ import Elm.Syntax.Expression as Expression exposing (Expression, Function, Funct
 import Elm.Syntax.Import exposing (Import)
 import Elm.Syntax.Node as Node exposing (Node)
 import Elm.Syntax.Pattern as Pattern
+import Elm.Syntax.Type as Type exposing (Type)
 import Elm.Syntax.TypeAnnotation as TypeAnnotation
 import Review.Fix as Fix
 import Review.Rule as Rule exposing (Error, Rule)
@@ -126,8 +127,10 @@ rule =
     Rule.newModuleRuleSchema "PruneTodo"
         { debugImported = DebugTodoWasNotImported
         , localContext = NoLocalContext
+        , declarations = []
         }
         |> Rule.withImportVisitor importVisitor
+        |> Rule.withDeclarationListVisitor addDeclarationsToContext
         |> Rule.withDeclarationEnterVisitor declarationVisitor
         |> Rule.withExpressionEnterVisitor todoExpressionVisitor
         |> Rule.fromModuleRuleSchema
@@ -136,12 +139,18 @@ rule =
 type alias Context =
     { debugImported : DebugImported
     , localContext : LocalContext
+    , declarations : List (Node Declaration)
     }
 
 
 type LocalContext
     = NoLocalContext
     | FuncDec Function
+
+
+addDeclarationsToContext : List (Node Declaration) -> Context -> ( List (Error {}), Context )
+addDeclarationsToContext declarations context =
+    ( [], { context | declarations = declarations } )
 
 
 
@@ -196,7 +205,7 @@ todoExpressionVisitor node context =
         ( DebugTodoWasImported, FuncDec func, Expression.Application [ maybeTodoNode, maybePruneNode ] ) ->
             case ( Node.value maybeTodoNode, Node.value maybePruneNode ) of
                 ( Expression.FunctionOrValue [] "todo", Expression.Literal ":prune" ) ->
-                    ( [ guessFunctionPruning True node func
+                    ( [ guessFunctionPruning True node context func
                       ]
                     , context
                     )
@@ -209,7 +218,7 @@ todoExpressionVisitor node context =
         ( _, FuncDec func, Expression.Application [ maybeTodoNode, maybePruneNode ] ) ->
             case ( Node.value maybeTodoNode, Node.value maybePruneNode ) of
                 ( Expression.FunctionOrValue [ "Debug" ] "todo", Expression.Literal ":prune" ) ->
-                    ( [ guessFunctionPruning False node func
+                    ( [ guessFunctionPruning False node context func
                       ]
                     , context
                     )
@@ -225,8 +234,8 @@ todoExpressionVisitor node context =
             )
 
 
-guessFunctionPruning : Bool -> Node Expression -> Function -> Error {}
-guessFunctionPruning todoFuncExposed node func =
+guessFunctionPruning : Bool -> Node Expression -> Context -> Function -> Error {}
+guessFunctionPruning todoFuncExposed node context func =
     let
         unpruneable : String
         unpruneable =
@@ -294,8 +303,8 @@ guessFunctionPruning todoFuncExposed node func =
                                                         _ ->
                                                             unpruneable
 
-                                                ( ( [], "Result" ), [ maybeArgPattern ] ) ->
-                                                    case Node.value maybeArgPattern of
+                                                ( ( [], "Result" ), [ resultArgPattern ] ) ->
+                                                    case Node.value resultArgPattern of
                                                         Pattern.VarPattern reslutArg ->
                                                             "case " ++ reslutArg ++ """ of
     Ok argOk -> Debug.todo ":prune"
@@ -304,12 +313,51 @@ guessFunctionPruning todoFuncExposed node func =
                                                         _ ->
                                                             unpruneable
 
-                                                ( ( [ "Result" ], "Result" ), [ maybeArgPattern ] ) ->
-                                                    case Node.value maybeArgPattern of
+                                                ( ( [ "Result" ], "Result" ), [ resultArgPattern ] ) ->
+                                                    case Node.value resultArgPattern of
                                                         Pattern.VarPattern reslutArg ->
                                                             "case " ++ reslutArg ++ """ of
     Ok argOk -> Debug.todo ":prune"
     Err argErr -> Debug.todo ":prune\""""
+
+                                                        _ ->
+                                                            unpruneable
+
+                                                ( ( moduleName, typeName ), argToMatch :: _ ) ->
+                                                    case ( findDec context typeName, Node.value argToMatch ) of
+                                                        ( Just declaration, Pattern.VarPattern arg ) ->
+                                                            "case "
+                                                                ++ arg
+                                                                ++ " of"
+                                                                ++ (List.foldl
+                                                                        (\constructorNode ( result, index ) ->
+                                                                            let
+                                                                                constr : Type.ValueConstructor
+                                                                                constr =
+                                                                                    Node.value constructorNode
+
+                                                                                ( constructorArgsStr, nextIndex ) =
+                                                                                    List.foldl
+                                                                                        (\_ ( consArgs, i ) ->
+                                                                                            ( (" arg" ++ String.fromInt i) :: consArgs
+                                                                                            , i + 1
+                                                                                            )
+                                                                                        )
+                                                                                        ( [], index )
+                                                                                        constr.arguments
+                                                                            in
+                                                                            ( result
+                                                                                ++ "\n    "
+                                                                                ++ Node.value constr.name
+                                                                                ++ String.concat (List.reverse constructorArgsStr)
+                                                                                ++ " -> Debug.todo \":prune\""
+                                                                            , nextIndex + 1
+                                                                            )
+                                                                        )
+                                                                        ( "", 0 )
+                                                                        declaration.constructors
+                                                                        |> Tuple.first
+                                                                   )
 
                                                         _ ->
                                                             unpruneable
@@ -324,3 +372,36 @@ guessFunctionPruning todoFuncExposed node func =
                                     unpruneable
             )
         ]
+
+
+findDec : Context -> String -> Maybe Type
+findDec context typeName =
+    listFindBy
+        (\declarationNode ->
+            case Node.value declarationNode of
+                Declaration.CustomTypeDeclaration ({ name } as customType) ->
+                    if Node.value name == typeName then
+                        Just customType
+
+                    else
+                        Nothing
+
+                _ ->
+                    Nothing
+        )
+        context.declarations
+
+
+listFindBy : (a -> Maybe b) -> List a -> Maybe b
+listFindBy pred list =
+    case list of
+        [] ->
+            Nothing
+
+        first :: rest ->
+            case pred first of
+                Just a ->
+                    Just a
+
+                Nothing ->
+                    listFindBy pred rest

@@ -154,4 +154,40 @@ a b = case b of
     Err argErr -> Debug.todo ":prune"
 """
                         ]
+        , test """should prune a function declaration that takes a custom type and break it into its parts""" <|
+            \() ->
+                """module A exposing (..)
+
+type Direction
+    = Up
+    | Down
+    | Left
+    | Right
+
+a : Direction -> String
+a dir = Debug.todo ":prune"
+"""
+                    |> Review.Test.run rule
+                    |> Review.Test.expectErrors
+                        [ Review.Test.error
+                            { message = "Pruning..."
+                            , details = [ "Prune code here?" ]
+                            , under = "Debug.todo \":prune\""
+                            }
+                            |> Review.Test.whenFixed """module A exposing (..)
+
+type Direction
+    = Up
+    | Down
+    | Left
+    | Right
+
+a : Direction -> String
+a dir = case dir of
+    Up -> Debug.todo ":prune"
+    Down -> Debug.todo ":prune"
+    Left -> Debug.todo ":prune"
+    Right -> Debug.todo ":prune"
+"""
+                        ]
         ]
