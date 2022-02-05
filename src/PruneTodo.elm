@@ -15,6 +15,7 @@ import Elm.Syntax.Module as Module exposing (Module)
 import Elm.Syntax.ModuleName exposing (ModuleName)
 import Elm.Syntax.Node as Node exposing (Node)
 import Elm.Syntax.Pattern as Pattern
+import Elm.Syntax.Range exposing (Range)
 import Elm.Syntax.Type as Type exposing (Type)
 import Elm.Syntax.TypeAnnotation as TypeAnnotation exposing (RecordDefinition, TypeAnnotation)
 import Review.Fix as Fix
@@ -356,7 +357,7 @@ todoExpressionVisitor node context =
         ( DebugTodoWasImported, FuncDec func, Expression.Application [ maybeTodoNode, maybePruneNode ] ) ->
             case ( Node.value maybeTodoNode, Node.value maybePruneNode ) of
                 ( Expression.FunctionOrValue [] "todo", Expression.Literal ":prune" ) ->
-                    ( [ guessFunctionPruning True node context func
+                    ( [ guessFunctionPruning (Node.range node) True node context func
                       ]
                     , context
                     )
@@ -369,7 +370,7 @@ todoExpressionVisitor node context =
         ( _, FuncDec func, Expression.Application [ maybeTodoNode, maybePruneNode ] ) ->
             case ( Node.value maybeTodoNode, Node.value maybePruneNode ) of
                 ( Expression.FunctionOrValue [ "Debug" ] "todo", Expression.Literal ":prune" ) ->
-                    ( [ guessFunctionPruning False node context func
+                    ( [ guessFunctionPruning (Node.range node) False node context func
                       ]
                     , context
                     )
@@ -394,8 +395,8 @@ unpruneable todoFuncExposed =
         "Debug.todo \":unpruneable\""
 
 
-guessFunctionPruning : Bool -> Node Expression -> ModuleContext -> Function -> Error {}
-guessFunctionPruning todoFuncExposed node context func =
+guessFunctionPruning : Range -> Bool -> Node Expression -> ModuleContext -> Function -> Error {}
+guessFunctionPruning replaceRange todoFuncExposed node context func =
     Rule.errorWithFix
         { message = "Pruning..."
         , details = [ "Prune code here?" ]
@@ -415,10 +416,10 @@ guessFunctionPruning todoFuncExposed node context func =
                                     "()"
 
                                 TypeAnnotation.Typed typeNode wrappedAnnotations ->
-                                    guessTypedPruning context todoFuncExposed typeNode wrappedAnnotations
+                                    guessTypedPruning replaceRange context todoFuncExposed typeNode wrappedAnnotations
 
                                 TypeAnnotation.FunctionTypeAnnotation inTypeAnnotation outTypeAnnotation ->
-                                    guessFunctionTypePrunig context todoFuncExposed func inTypeAnnotation outTypeAnnotation
+                                    guessFunctionTypePrunig replaceRange context todoFuncExposed func inTypeAnnotation outTypeAnnotation
 
                                 _ ->
                                     unpruneable todoFuncExposed
@@ -426,22 +427,49 @@ guessFunctionPruning todoFuncExposed node context func =
         ]
 
 
-guessFunctionTypePrunig : ModuleContext -> Bool -> Function -> Node TypeAnnotation -> Node TypeAnnotation -> String
-guessFunctionTypePrunig context todoFuncExposed func inTypeAnnotation outTypeAnnotation =
+getIndentation : Range -> String
+getIndentation replaceRange =
+    let
+        indentationOffset : Int
+        indentationOffset =
+            remainderBy 4 (replaceRange.start.column - 1)
+    in
+    String.repeat
+        ((if indentationOffset == 0 then
+            replaceRange.start.column
+
+          else
+            replaceRange.start.column - indentationOffset
+         )
+            + 3
+        )
+        " "
+
+
+guessFunctionTypePrunig : Range -> ModuleContext -> Bool -> Function -> Node TypeAnnotation -> Node TypeAnnotation -> String
+guessFunctionTypePrunig replaceRange context todoFuncExposed func inTypeAnnotation outTypeAnnotation =
     case Node.value inTypeAnnotation of
         TypeAnnotation.Typed typeNode _ ->
             let
                 funcDec : FunctionImplementation
                 funcDec =
                     Node.value func.declaration
+
+                indentation : String
+                indentation =
+                    getIndentation replaceRange
             in
             case ( Node.value typeNode, funcDec.arguments ) of
                 ( ( _, "Maybe" ), [ maybeArgPattern ] ) ->
                     case ( ModuleNameLookupTable.moduleNameFor context.lookupTable typeNode, Node.value maybeArgPattern ) of
                         ( Just [ "Maybe" ], Pattern.VarPattern maybeArg ) ->
-                            "case " ++ maybeArg ++ """ of
-    Nothing -> Debug.todo ":prune"
-    Just arg -> Debug.todo ":prune\""""
+                            "case "
+                                ++ maybeArg
+                                ++ " of\n"
+                                ++ indentation
+                                ++ "Nothing -> Debug.todo \":prune\"\n"
+                                ++ indentation
+                                ++ "Just arg -> Debug.todo \":prune\""
 
                         _ ->
                             unpruneable todoFuncExposed
@@ -449,9 +477,13 @@ guessFunctionTypePrunig context todoFuncExposed func inTypeAnnotation outTypeAnn
                 ( ( _, "Result" ), [ resultArgPattern ] ) ->
                     case ( ModuleNameLookupTable.moduleNameFor context.lookupTable typeNode, Node.value resultArgPattern ) of
                         ( Just [ "Result" ], Pattern.VarPattern reslutArg ) ->
-                            "case " ++ reslutArg ++ """ of
-    Ok argOk -> Debug.todo ":prune"
-    Err argErr -> Debug.todo ":prune\""""
+                            "case "
+                                ++ reslutArg
+                                ++ " of\n"
+                                ++ indentation
+                                ++ "Ok argOk -> Debug.todo \":prune\"\n"
+                                ++ indentation
+                                ++ "Err argErr -> Debug.todo \":prune\""
 
                         _ ->
                             unpruneable todoFuncExposed
@@ -466,18 +498,22 @@ guessFunctionTypePrunig context todoFuncExposed func inTypeAnnotation outTypeAnn
                                 TypeAnnotation.Tupled tupleTypeAnnotations ->
                                     case tupleTypeAnnotations of
                                         [ _, _ ] ->
-                                            """Json.Decode.map2 Tuple.pair
-    (Debug.todo ":prune")
-    (Debug.todo ":prune")
-"""
+                                            "Json.Decode.map2 Tuple.pair\n"
+                                                ++ indentation
+                                                ++ "(Debug.todo \":prune\")\n"
+                                                ++ indentation
+                                                ++ "(Debug.todo \":prune\")"
 
                                         [ _, _, _ ] ->
-                                            """Json.Decode.map3
-    (\\first second third -> ( first, second, third ))
-    (Debug.todo ":prune")
-    (Debug.todo ":prune")
-    (Debug.todo ":prune")
-"""
+                                            "Json.Decode.map3\n"
+                                                ++ indentation
+                                                ++ "(\\first second third -> ( first, second, third ))\n"
+                                                ++ indentation
+                                                ++ "(Debug.todo \":prune\")\n"
+                                                ++ indentation
+                                                ++ "(Debug.todo \":prune\")\n"
+                                                ++ indentation
+                                                ++ "(Debug.todo \":prune\")"
 
                                         _ ->
                                             unpruneable todoFuncExposed
@@ -536,7 +572,8 @@ guessFunctionTypePrunig context todoFuncExposed func inTypeAnnotation outTypeAnn
                                                         constr.arguments
                                             in
                                             ( result
-                                                ++ "\n    "
+                                                ++ "\n"
+                                                ++ indentation
                                                 ++ Node.value constr.name
                                                 ++ String.concat (List.reverse constructorArgsStr)
                                                 ++ " -> Debug.todo \":prune\""
@@ -558,8 +595,8 @@ guessFunctionTypePrunig context todoFuncExposed func inTypeAnnotation outTypeAnn
             unpruneable todoFuncExposed
 
 
-guessTypedPruning : ModuleContext -> Bool -> Node ( ModuleName, String ) -> List (Node TypeAnnotation) -> String
-guessTypedPruning context todoFuncExposed typeNode wrappedAnnotations =
+guessTypedPruning : Range -> ModuleContext -> Bool -> Node ( ModuleName, String ) -> List (Node TypeAnnotation) -> String
+guessTypedPruning replaceRange context todoFuncExposed typeNode wrappedAnnotations =
     case Node.value typeNode of
         ( _, "Int" ) ->
             case ModuleNameLookupTable.moduleNameFor context.lookupTable typeNode of
@@ -572,6 +609,11 @@ guessTypedPruning context todoFuncExposed typeNode wrappedAnnotations =
         ( _, "Decoder" ) ->
             case ModuleNameLookupTable.moduleNameFor context.lookupTable typeNode of
                 Just [ "Json", "Decode" ] ->
+                    let
+                        indentation : String
+                        indentation =
+                            getIndentation replaceRange
+                    in
                     case List.map Node.value wrappedAnnotations of
                         [ TypeAnnotation.Unit ] ->
                             "Json.Decode.succeed ()"
@@ -579,25 +621,31 @@ guessTypedPruning context todoFuncExposed typeNode wrappedAnnotations =
                         [ TypeAnnotation.Tupled tupleTypeAnnotations ] ->
                             case tupleTypeAnnotations of
                                 [ _, _ ] ->
-                                    """Json.Decode.map2 Tuple.pair
-    (Debug.todo ":prune")
-    (Debug.todo ":prune")"""
+                                    "Json.Decode.map2 Tuple.pair\n"
+                                        ++ indentation
+                                        ++ "(Debug.todo \":prune\")\n"
+                                        ++ indentation
+                                        ++ "(Debug.todo \":prune\")"
 
                                 [ _, _, _ ] ->
-                                    """Json.Decode.map3
-    (\\first second third -> ( first, second, third ))
-    (Debug.todo ":prune")
-    (Debug.todo ":prune")
-    (Debug.todo ":prune")"""
+                                    "Json.Decode.map3\n"
+                                        ++ indentation
+                                        ++ "(\\first second third -> ( first, second, third ))\n"
+                                        ++ indentation
+                                        ++ "(Debug.todo \":prune\")\n"
+                                        ++ indentation
+                                        ++ "(Debug.todo \":prune\")\n"
+                                        ++ indentation
+                                        ++ "(Debug.todo \":prune\")"
 
                                 _ ->
                                     unpruneable todoFuncExposed
 
                         [ TypeAnnotation.Record recordDefinition ] ->
-                            generateRecordDecoder todoFuncExposed recordDefinition
+                            generateRecordDecoder indentation todoFuncExposed recordDefinition
 
                         [ TypeAnnotation.GenericRecord _ recordDefinitionNode ] ->
-                            generateRecordDecoder todoFuncExposed (Node.value recordDefinitionNode)
+                            generateRecordDecoder indentation todoFuncExposed (Node.value recordDefinitionNode)
 
                         _ ->
                             unpruneable todoFuncExposed
@@ -609,16 +657,17 @@ guessTypedPruning context todoFuncExposed typeNode wrappedAnnotations =
             unpruneable todoFuncExposed
 
 
-generateRecordDecoder : Bool -> RecordDefinition -> String
-generateRecordDecoder todoFuncExposed recordDefinition =
+generateRecordDecoder : String -> Bool -> RecordDefinition -> String
+generateRecordDecoder indentation todoFuncExposed recordDefinition =
     let
         quantityToDecode : Int
         quantityToDecode =
             List.length recordDefinition
     in
     if quantityToDecode == 1 then
-        """Json.Decode.map"""
-            ++ "\n    (\\"
+        "Json.Decode.map\n"
+            ++ indentation
+            ++ "(\\"
             ++ String.join " " (List.map (Node.value >> Tuple.first >> Node.value) recordDefinition)
             ++ " -> { "
             ++ String.join ", "
@@ -637,12 +686,14 @@ generateRecordDecoder todoFuncExposed recordDefinition =
                     recordDefinition
                 )
             ++ " })"
-            ++ String.concat (List.repeat quantityToDecode "\n    (Debug.todo \":prune\")")
+            ++ String.concat (List.repeat quantityToDecode ("\n" ++ indentation ++ "(Debug.todo \":prune\")"))
 
     else if quantityToDecode < 9 then
         "Json.Decode.map"
             ++ String.fromInt quantityToDecode
-            ++ "\n    (\\"
+            ++ "\n"
+            ++ indentation
+            ++ "(\\"
             ++ String.join " " (List.map (Node.value >> Tuple.first >> Node.value) recordDefinition)
             ++ " -> { "
             ++ String.join ", "
@@ -661,7 +712,7 @@ generateRecordDecoder todoFuncExposed recordDefinition =
                     recordDefinition
                 )
             ++ " })"
-            ++ String.concat (List.repeat quantityToDecode "\n    (Debug.todo \":prune\")")
+            ++ String.concat (List.repeat quantityToDecode ("\n" ++ indentation ++ "(Debug.todo \":prune\")"))
 
     else if Debug.todo "decode pipeline available" then
         Debug.todo "TODO"

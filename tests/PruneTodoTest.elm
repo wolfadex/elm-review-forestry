@@ -115,7 +115,8 @@ a = 0
                 """module A exposing (..)
 
 a : Maybe Int -> Int
-a b = Debug.todo ":prune"
+a b =
+    Debug.todo ":prune"
 """
                     |> Review.Test.run rule
                     |> Review.Test.expectErrors
@@ -127,9 +128,10 @@ a b = Debug.todo ":prune"
                             |> Review.Test.whenFixed """module A exposing (..)
 
 a : Maybe Int -> Int
-a b = case b of
-    Nothing -> Debug.todo ":prune"
-    Just arg -> Debug.todo ":prune"
+a b =
+    case b of
+        Nothing -> Debug.todo ":prune"
+        Just arg -> Debug.todo ":prune"
 """
                         ]
         , test """should prune a function declaration that takes a `Result e a` and returns something""" <|
@@ -137,7 +139,8 @@ a b = case b of
                 """module A exposing (..)
 
 a : Result e a -> a
-a b = Debug.todo ":prune"
+a b =
+    Debug.todo ":prune"
 """
                     |> Review.Test.run rule
                     |> Review.Test.expectErrors
@@ -149,9 +152,10 @@ a b = Debug.todo ":prune"
                             |> Review.Test.whenFixed """module A exposing (..)
 
 a : Result e a -> a
-a b = case b of
-    Ok argOk -> Debug.todo ":prune"
-    Err argErr -> Debug.todo ":prune"
+a b =
+    case b of
+        Ok argOk -> Debug.todo ":prune"
+        Err argErr -> Debug.todo ":prune"
 """
                         ]
         , test """should prune a function declaration that takes a custom type and break it into its parts""" <|
@@ -184,10 +188,10 @@ type Direction
 
 a : Direction -> String
 a dir = case dir of
-    Up -> Debug.todo ":prune"
-    Down -> Debug.todo ":prune"
-    Left -> Debug.todo ":prune"
-    Right -> Debug.todo ":prune"
+            Up -> Debug.todo ":prune"
+            Down -> Debug.todo ":prune"
+            Left -> Debug.todo ":prune"
+            Right -> Debug.todo ":prune"
 """
                         ]
         , test """should prune a function declaration that takes a complex custom type and break it into its parts""" <|
@@ -220,10 +224,10 @@ type Direction
 
 a : Direction -> String
 a dir = case dir of
-    Up arg0 -> Debug.todo ":prune"
-    Down arg1 arg2 -> Debug.todo ":prune"
-    Left -> Debug.todo ":prune"
-    Right arg3 arg4 arg5 -> Debug.todo ":prune"
+            Up arg0 -> Debug.todo ":prune"
+            Down arg1 arg2 -> Debug.todo ":prune"
+            Left -> Debug.todo ":prune"
+            Right arg3 arg4 arg5 -> Debug.todo ":prune"
 """
                         ]
         , test """should prune a function declaration that takes an imported custom type and break it into its parts""" <|
@@ -256,10 +260,10 @@ import Other exposing (Direction(..))
 
 a : Direction -> String
 a dir = case dir of
-    Up arg0 -> Debug.todo ":prune"
-    Down arg1 arg2 -> Debug.todo ":prune"
-    Left -> Debug.todo ":prune"
-    Right arg3 arg4 arg5 -> Debug.todo ":prune"
+            Up arg0 -> Debug.todo ":prune"
+            Down arg1 arg2 -> Debug.todo ":prune"
+            Left -> Debug.todo ":prune"
+            Right arg3 arg4 arg5 -> Debug.todo ":prune"
 """
                             ]
                           )
@@ -320,8 +324,8 @@ import Json.Decode exposing (Decoder)
 
 a : Decoder ( Int, String )
 a = Json.Decode.map2 Tuple.pair
-    (Debug.todo ":prune")
-    (Debug.todo ":prune")
+        (Debug.todo ":prune")
+        (Debug.todo ":prune")
 """
                         ]
         , test """should prune a function declaration that returns a Decoder ( a, b, c )""" <|
@@ -346,10 +350,10 @@ import Json.Decode exposing (Decoder)
 
 a : Decoder ( Int, String, () )
 a = Json.Decode.map3
-    (\\first second third -> ( first, second, third ))
-    (Debug.todo ":prune")
-    (Debug.todo ":prune")
-    (Debug.todo ":prune")
+        (\\first second third -> ( first, second, third ))
+        (Debug.todo ":prune")
+        (Debug.todo ":prune")
+        (Debug.todo ":prune")
 """
                         ]
         , test """should prune a function declaration that returns a Decoder { something : Something }""" <|
@@ -374,9 +378,9 @@ import Json.Decode exposing (Decoder)
 
 a : Decoder { left : Int, right : String }
 a = Json.Decode.map2
-    (\\left right -> { left = left, right = right })
-    (Debug.todo ":prune")
-    (Debug.todo ":prune")
+        (\\left right -> { left = left, right = right })
+        (Debug.todo ":prune")
+        (Debug.todo ":prune")
 """
                         ]
         , test """should prune a function declaration that returns a Decoder { r | something : Something }""" <|
@@ -401,8 +405,8 @@ import Json.Decode exposing (Decoder)
 
 a : Decoder { r | right : String }
 a = Json.Decode.map
-    (\\right -> { right = right })
-    (Debug.todo ":prune")
+        (\\right -> { right = right })
+        (Debug.todo ":prune")
 """
                         ]
 
@@ -437,4 +441,42 @@ a = Json.Decode.map
         --     (Debug.todo ":prune")
         -- """
         --                         ]
+        , test """can build a basic `update` function""" <|
+            \() ->
+                """module A exposing (..)
+
+type alias Model =
+    {}
+
+type Msg
+    = Increment
+    | Decrement
+
+update : Msg -> Model -> Model
+update msg model =
+    Debug.todo ":prune"
+"""
+                    |> Review.Test.run rule
+                    |> Review.Test.expectErrors
+                        [ Review.Test.error
+                            { message = "Pruning..."
+                            , details = [ "Prune code here?" ]
+                            , under = "Debug.todo \":prune\""
+                            }
+                            |> Review.Test.whenFixed """module A exposing (..)
+
+type alias Model =
+    {}
+
+type Msg
+    = Increment
+    | Decrement
+
+update : Msg -> Model -> Model
+update msg model =
+    case msg of
+        Increment -> Debug.todo ":prune"
+        Decrement -> Debug.todo ":prune"
+"""
+                        ]
         ]
