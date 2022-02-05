@@ -154,4 +154,148 @@ a b = case b of
     Err argErr -> Debug.todo ":prune"
 """
                         ]
+        , test """should prune a function declaration that takes a custom type and break it into its parts""" <|
+            \() ->
+                """module A exposing (..)
+
+type Direction
+    = Up
+    | Down
+    | Left
+    | Right
+
+a : Direction -> String
+a dir = Debug.todo ":prune"
+"""
+                    |> Review.Test.run rule
+                    |> Review.Test.expectErrors
+                        [ Review.Test.error
+                            { message = "Pruning..."
+                            , details = [ "Prune code here?" ]
+                            , under = "Debug.todo \":prune\""
+                            }
+                            |> Review.Test.whenFixed """module A exposing (..)
+
+type Direction
+    = Up
+    | Down
+    | Left
+    | Right
+
+a : Direction -> String
+a dir = case dir of
+    Up -> Debug.todo ":prune"
+    Down -> Debug.todo ":prune"
+    Left -> Debug.todo ":prune"
+    Right -> Debug.todo ":prune"
+"""
+                        ]
+        , test """should prune a function declaration that takes a complex custom type and break it into its parts""" <|
+            \() ->
+                """module A exposing (..)
+
+type Direction
+    = Up Int
+    | Down String Int
+    | Left
+    | Right Direction Direction Direction
+
+a : Direction -> String
+a dir = Debug.todo ":prune"
+"""
+                    |> Review.Test.run rule
+                    |> Review.Test.expectErrors
+                        [ Review.Test.error
+                            { message = "Pruning..."
+                            , details = [ "Prune code here?" ]
+                            , under = "Debug.todo \":prune\""
+                            }
+                            |> Review.Test.whenFixed """module A exposing (..)
+
+type Direction
+    = Up Int
+    | Down String Int
+    | Left
+    | Right Direction Direction Direction
+
+a : Direction -> String
+a dir = case dir of
+    Up arg0 -> Debug.todo ":prune"
+    Down arg1 arg2 -> Debug.todo ":prune"
+    Left -> Debug.todo ":prune"
+    Right arg3 arg4 arg5 -> Debug.todo ":prune"
+"""
+                        ]
+        , test """should prune a function declaration that takes an imported custom type and break it into its parts""" <|
+            \() ->
+                [ """module Other exposing (Direction(..))
+
+type Direction
+    = Up Int
+    | Down String Int
+    | Left
+    | Right Direction Direction Direction
+""", """module NeedsPruning exposing (..)
+
+import Other exposing (Direction(..))
+
+a : Direction -> String
+a dir = Debug.todo ":prune"
+""" ]
+                    |> Review.Test.runOnModules rule
+                    |> Review.Test.expectErrorsForModules
+                        [ ( "NeedsPruning"
+                          , [ Review.Test.error
+                                { message = "Pruning..."
+                                , details = [ "Prune code here?" ]
+                                , under = "Debug.todo \":prune\""
+                                }
+                                |> Review.Test.whenFixed """module NeedsPruning exposing (..)
+
+import Other exposing (Direction(..))
+
+a : Direction -> String
+a dir = case dir of
+    Up arg0 -> Debug.todo ":prune"
+    Down arg1 arg2 -> Debug.todo ":prune"
+    Left -> Debug.todo ":prune"
+    Right arg3 arg4 arg5 -> Debug.todo ":prune"
+"""
+                            ]
+                          )
+                        ]
+        , test """shouldn't prune a function declaration that takes an imported custom type when the constructors aren't available""" <|
+            \() ->
+                [ """module Other exposing (Direction)
+
+type Direction
+    = Up Int
+    | Down String Int
+    | Left
+    | Right Direction Direction Direction
+""", """module NeedsPruning exposing (..)
+
+import Other exposing (Direction(..))
+
+a : Direction -> String
+a dir = Debug.todo ":prune"
+""" ]
+                    |> Review.Test.runOnModules rule
+                    |> Review.Test.expectErrorsForModules
+                        [ ( "NeedsPruning"
+                          , [ Review.Test.error
+                                { message = "Pruning..."
+                                , details = [ "Prune code here?" ]
+                                , under = "Debug.todo \":prune\""
+                                }
+                                |> Review.Test.whenFixed """module NeedsPruning exposing (..)
+
+import Other exposing (Direction(..))
+
+a : Direction -> String
+a dir = Debug.todo ":unpruneable"
+"""
+                            ]
+                          )
+                        ]
         ]
