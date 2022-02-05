@@ -298,4 +298,143 @@ a dir = Debug.todo ":unpruneable"
                             ]
                           )
                         ]
+        , test """should prune a function declaration that returns a Decoder ( a, b )""" <|
+            \() ->
+                """module A exposing (..)
+
+import Json.Decode exposing (Decoder)
+
+a : Decoder ( Int, String )
+a = Debug.todo ":prune"
+"""
+                    |> Review.Test.run rule
+                    |> Review.Test.expectErrors
+                        [ Review.Test.error
+                            { message = "Pruning..."
+                            , details = [ "Prune code here?" ]
+                            , under = "Debug.todo \":prune\""
+                            }
+                            |> Review.Test.whenFixed """module A exposing (..)
+
+import Json.Decode exposing (Decoder)
+
+a : Decoder ( Int, String )
+a = Json.Decode.map2 Tuple.pair
+    (Debug.todo ":prune")
+    (Debug.todo ":prune")
+"""
+                        ]
+        , test """should prune a function declaration that returns a Decoder ( a, b, c )""" <|
+            \() ->
+                """module A exposing (..)
+
+import Json.Decode exposing (Decoder)
+
+a : Decoder ( Int, String, () )
+a = Debug.todo ":prune"
+"""
+                    |> Review.Test.run rule
+                    |> Review.Test.expectErrors
+                        [ Review.Test.error
+                            { message = "Pruning..."
+                            , details = [ "Prune code here?" ]
+                            , under = "Debug.todo \":prune\""
+                            }
+                            |> Review.Test.whenFixed """module A exposing (..)
+
+import Json.Decode exposing (Decoder)
+
+a : Decoder ( Int, String, () )
+a = Json.Decode.map3
+    (\\first second third -> ( first, second, third ))
+    (Debug.todo ":prune")
+    (Debug.todo ":prune")
+    (Debug.todo ":prune")
+"""
+                        ]
+        , test """should prune a function declaration that returns a Decoder { something : Something }""" <|
+            \() ->
+                """module A exposing (..)
+
+import Json.Decode exposing (Decoder)
+
+a : Decoder { left : Int, right : String }
+a = Debug.todo ":prune"
+"""
+                    |> Review.Test.run rule
+                    |> Review.Test.expectErrors
+                        [ Review.Test.error
+                            { message = "Pruning..."
+                            , details = [ "Prune code here?" ]
+                            , under = "Debug.todo \":prune\""
+                            }
+                            |> Review.Test.whenFixed """module A exposing (..)
+
+import Json.Decode exposing (Decoder)
+
+a : Decoder { left : Int, right : String }
+a = Json.Decode.map2
+    (\\left right -> { left = left, right = right })
+    (Debug.todo ":prune")
+    (Debug.todo ":prune")
+"""
+                        ]
+        , test """should prune a function declaration that returns a Decoder { r | something : Something }""" <|
+            \() ->
+                """module A exposing (..)
+
+import Json.Decode exposing (Decoder)
+
+a : Decoder { r | right : String }
+a = Debug.todo ":prune"
+"""
+                    |> Review.Test.run rule
+                    |> Review.Test.expectErrors
+                        [ Review.Test.error
+                            { message = "Pruning..."
+                            , details = [ "Prune code here?" ]
+                            , under = "Debug.todo \":prune\""
+                            }
+                            |> Review.Test.whenFixed """module A exposing (..)
+
+import Json.Decode exposing (Decoder)
+
+a : Decoder { r | right : String }
+a = Json.Decode.map
+    (\\right -> { right = right })
+    (Debug.todo ":prune")
+"""
+                        ]
+
+        --         , test """should prune a function declaration that returns a Decoder""" <|
+        --             \() ->
+        --                 """module A exposing (..)
+        -- import Json.Decode exposing (Decoder)
+        -- type alias Model =
+        --     { left : Int
+        --     , right : String
+        --     }
+        -- a : Decoder Model
+        -- a = Debug.todo ":prune"
+        --         """
+        --                     |> Review.Test.run rule
+        --                     |> Review.Test.expectErrors
+        --                         [ Review.Test.error
+        --                             { message = "Pruning..."
+        --                             , details = [ "Prune code here?" ]
+        --                             , under = "Debug.todo \":prune\""
+        --                             }
+        --                             |> Review.Test.whenFixed """module A exposing (..)
+        -- import Json.Decode exposing (Decoder)
+        -- type alias Model =
+        --     { left : Int
+        --     , right : String
+        --     }
+        -- a : Decoder Model
+        -- a = Json.Decode.map2
+        --     (\\left right -> { left = left, right = right })
+        --     (Debug.todo ":prune")
+        --     (Debug.todo ":prune")
+        -- """
+        --                         ]
         ]

@@ -16,7 +16,7 @@ import Elm.Syntax.ModuleName exposing (ModuleName)
 import Elm.Syntax.Node as Node exposing (Node)
 import Elm.Syntax.Pattern as Pattern
 import Elm.Syntax.Type as Type exposing (Type)
-import Elm.Syntax.TypeAnnotation as TypeAnnotation exposing (TypeAnnotation)
+import Elm.Syntax.TypeAnnotation as TypeAnnotation exposing (RecordDefinition, TypeAnnotation)
 import Review.Fix as Fix
 import Review.ModuleNameLookupTable as ModuleNameLookupTable exposing (ModuleNameLookupTable)
 import Review.Rule as Rule exposing (Error, Rule)
@@ -124,7 +124,6 @@ module Other exposing (Direction(..))
 
 and
 module This exposing (a)
-
 
     directionToText : Direction -> String
     directionToText direction =
@@ -283,6 +282,22 @@ addDeclarationsToContext declarations context =
                                                 )
                                                 declarations
 
+                                Exposing.TypeOrAliasExpose name ->
+                                    listFindBy
+                                        (\declarationNode ->
+                                            case Node.value declarationNode of
+                                                Declaration.AliasDeclaration typeAlias ->
+                                                    if Node.value typeAlias.name == name then
+                                                        Just declarationNode
+
+                                                    else
+                                                        Nothing
+
+                                                _ ->
+                                                    Nothing
+                                        )
+                                        declarations
+
                                 _ ->
                                     Nothing
                         )
@@ -399,11 +414,11 @@ guessFunctionPruning todoFuncExposed node context func =
                                 TypeAnnotation.Unit ->
                                     "()"
 
-                                TypeAnnotation.Typed typeNode _ ->
-                                    guessTypedPruning context todoFuncExposed typeNode
+                                TypeAnnotation.Typed typeNode wrappedAnnotations ->
+                                    guessTypedPruning context todoFuncExposed typeNode wrappedAnnotations
 
-                                TypeAnnotation.FunctionTypeAnnotation inTypeAnnotation _ ->
-                                    guessFunctionTypePrunig context todoFuncExposed func inTypeAnnotation
+                                TypeAnnotation.FunctionTypeAnnotation inTypeAnnotation outTypeAnnotation ->
+                                    guessFunctionTypePrunig context todoFuncExposed func inTypeAnnotation outTypeAnnotation
 
                                 _ ->
                                     unpruneable todoFuncExposed
@@ -411,8 +426,8 @@ guessFunctionPruning todoFuncExposed node context func =
         ]
 
 
-guessFunctionTypePrunig : ModuleContext -> Bool -> Function -> Node TypeAnnotation -> String
-guessFunctionTypePrunig context todoFuncExposed func inTypeAnnotation =
+guessFunctionTypePrunig : ModuleContext -> Bool -> Function -> Node TypeAnnotation -> Node TypeAnnotation -> String
+guessFunctionTypePrunig context todoFuncExposed func inTypeAnnotation outTypeAnnotation =
     case Node.value inTypeAnnotation of
         TypeAnnotation.Typed typeNode _ ->
             let
@@ -437,6 +452,44 @@ guessFunctionTypePrunig context todoFuncExposed func inTypeAnnotation =
                             "case " ++ reslutArg ++ """ of
     Ok argOk -> Debug.todo ":prune"
     Err argErr -> Debug.todo ":prune\""""
+
+                        _ ->
+                            unpruneable todoFuncExposed
+
+                ( ( _, "Decoder" ), [] ) ->
+                    case ModuleNameLookupTable.moduleNameFor context.lookupTable typeNode of
+                        Just [ "Json", "Decode" ] ->
+                            case Node.value outTypeAnnotation of
+                                TypeAnnotation.Unit ->
+                                    "Json.Decode.succeed ()"
+
+                                TypeAnnotation.Tupled tupleTypeAnnotations ->
+                                    case tupleTypeAnnotations of
+                                        [ _, _ ] ->
+                                            """Json.Decode.map2 Tuple.pair
+    (Debug.todo ":prune")
+    (Debug.todo ":prune")
+"""
+
+                                        [ _, _, _ ] ->
+                                            """Json.Decode.map3
+    (\\first second third -> ( first, second, third ))
+    (Debug.todo ":prune")
+    (Debug.todo ":prune")
+    (Debug.todo ":prune")
+"""
+
+                                        _ ->
+                                            unpruneable todoFuncExposed
+
+                                TypeAnnotation.Record recordDefinition ->
+                                    Debug.todo "TODO"
+
+                                TypeAnnotation.GenericRecord extensibleRecordNameNode recordDefinitionNode ->
+                                    Debug.todo "TODO"
+
+                                _ ->
+                                    unpruneable todoFuncExposed
 
                         _ ->
                             unpruneable todoFuncExposed
@@ -505,8 +558,8 @@ guessFunctionTypePrunig context todoFuncExposed func inTypeAnnotation =
             unpruneable todoFuncExposed
 
 
-guessTypedPruning : ModuleContext -> Bool -> Node ( ModuleName, String ) -> String
-guessTypedPruning context todoFuncExposed typeNode =
+guessTypedPruning : ModuleContext -> Bool -> Node ( ModuleName, String ) -> List (Node TypeAnnotation) -> String
+guessTypedPruning context todoFuncExposed typeNode wrappedAnnotations =
     case Node.value typeNode of
         ( _, "Int" ) ->
             case ModuleNameLookupTable.moduleNameFor context.lookupTable typeNode of
@@ -516,8 +569,108 @@ guessTypedPruning context todoFuncExposed typeNode =
                 _ ->
                     unpruneable todoFuncExposed
 
+        ( _, "Decoder" ) ->
+            case ModuleNameLookupTable.moduleNameFor context.lookupTable typeNode of
+                Just [ "Json", "Decode" ] ->
+                    case List.map Node.value wrappedAnnotations of
+                        [ TypeAnnotation.Unit ] ->
+                            "Json.Decode.succeed ()"
+
+                        [ TypeAnnotation.Tupled tupleTypeAnnotations ] ->
+                            case tupleTypeAnnotations of
+                                [ _, _ ] ->
+                                    """Json.Decode.map2 Tuple.pair
+    (Debug.todo ":prune")
+    (Debug.todo ":prune")"""
+
+                                [ _, _, _ ] ->
+                                    """Json.Decode.map3
+    (\\first second third -> ( first, second, third ))
+    (Debug.todo ":prune")
+    (Debug.todo ":prune")
+    (Debug.todo ":prune")"""
+
+                                _ ->
+                                    unpruneable todoFuncExposed
+
+                        [ TypeAnnotation.Record recordDefinition ] ->
+                            generateRecordDecoder todoFuncExposed recordDefinition
+
+                        [ TypeAnnotation.GenericRecord _ recordDefinitionNode ] ->
+                            generateRecordDecoder todoFuncExposed (Node.value recordDefinitionNode)
+
+                        _ ->
+                            unpruneable todoFuncExposed
+
+                _ ->
+                    unpruneable todoFuncExposed
+
         _ ->
             unpruneable todoFuncExposed
+
+
+generateRecordDecoder : Bool -> RecordDefinition -> String
+generateRecordDecoder todoFuncExposed recordDefinition =
+    let
+        quantityToDecode : Int
+        quantityToDecode =
+            List.length recordDefinition
+    in
+    if quantityToDecode == 1 then
+        """Json.Decode.map"""
+            ++ "\n    (\\"
+            ++ String.join " " (List.map (Node.value >> Tuple.first >> Node.value) recordDefinition)
+            ++ " -> { "
+            ++ String.join ", "
+                (List.map
+                    (\recordField ->
+                        let
+                            ( labelNode, _ ) =
+                                Node.value recordField
+
+                            label : String
+                            label =
+                                Node.value labelNode
+                        in
+                        label ++ " = " ++ label
+                    )
+                    recordDefinition
+                )
+            ++ " })"
+            ++ String.concat (List.repeat quantityToDecode "\n    (Debug.todo \":prune\")")
+
+    else if quantityToDecode < 9 then
+        "Json.Decode.map"
+            ++ String.fromInt quantityToDecode
+            ++ "\n    (\\"
+            ++ String.join " " (List.map (Node.value >> Tuple.first >> Node.value) recordDefinition)
+            ++ " -> { "
+            ++ String.join ", "
+                (List.map
+                    (\recordField ->
+                        let
+                            ( labelNode, _ ) =
+                                Node.value recordField
+
+                            label : String
+                            label =
+                                Node.value labelNode
+                        in
+                        label ++ " = " ++ label
+                    )
+                    recordDefinition
+                )
+            ++ " })"
+            ++ String.concat (List.repeat quantityToDecode "\n    (Debug.todo \":prune\")")
+
+    else if Debug.todo "decode pipeline available" then
+        Debug.todo "TODO"
+
+    else if Debug.todo "decode extra available" then
+        Debug.todo "TODO"
+
+    else
+        unpruneable todoFuncExposed
 
 
 findDec : List (Node Declaration) -> String -> Maybe Type
