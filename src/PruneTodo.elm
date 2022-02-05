@@ -111,6 +111,43 @@ will be replaced with
                 Debug.todo ":prune"
 
 
+### Custom types
+
+Given
+module Other exposing (Direction(..))
+
+    type Direction
+        = Up Int
+        | Down String Int
+        | Left
+        | Right Direction Direction Direction
+
+and
+module This exposing (a)
+
+
+    directionToText : Direction -> String
+    directionToText direction =
+        Debug.todo ":prune"
+
+`directionToText` will be updated to
+
+    directionToText : Direction -> String
+    directionToText direction =
+        case direction of
+            Up arg0 ->
+                Debug.todo ":prune"
+
+            Down arg1 arg2 ->
+                Debug.todo ":prune"
+
+            Left ->
+                Debug.todo ":prune"
+
+            Right arg3 arg4 arg5 ->
+                Debug.todo ":prune"
+
+
 ## When (not) to enable this rule
 
 This rule is useful for trying to do inline code generation.
