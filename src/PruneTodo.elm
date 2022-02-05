@@ -6,10 +6,12 @@ module PruneTodo exposing (rule)
 
 -}
 
+import Dict exposing (Dict)
 import Elm.Syntax.Declaration as Declaration exposing (Declaration)
-import Elm.Syntax.Exposing as Exposing exposing (Exposing(..), TopLevelExpose(..))
+import Elm.Syntax.Exposing as Exposing exposing (Exposing)
 import Elm.Syntax.Expression as Expression exposing (Expression, Function, FunctionImplementation)
 import Elm.Syntax.Import exposing (Import)
+import Elm.Syntax.Module as Module exposing (Module)
 import Elm.Syntax.ModuleName exposing (ModuleName)
 import Elm.Syntax.Node as Node exposing (Node)
 import Elm.Syntax.Pattern as Pattern
@@ -17,7 +19,6 @@ import Elm.Syntax.Type as Type exposing (Type)
 import Elm.Syntax.TypeAnnotation as TypeAnnotation exposing (TypeAnnotation)
 import Review.Fix as Fix
 import Review.ModuleNameLookupTable as ModuleNameLookupTable exposing (ModuleNameLookupTable)
-import Review.Project.Dependency exposing (Dependency)
 import Review.Rule as Rule exposing (Error, Rule)
 
 
@@ -127,21 +128,53 @@ elm-review --template wolfadex/elm-review-forestry/example --rules PruneTodo
 -}
 rule : Rule
 rule =
-    Rule.newModuleRuleSchemaUsingContextCreator "PruneTodo" initialContext
+    Rule.newProjectRuleSchema "PruneTodo - Project" { exposedDeclarations = Dict.empty }
+        |> Rule.withContextFromImportedModules
+        |> Rule.withModuleVisitor moduleVisitor
+        |> Rule.withModuleContextUsingContextCreator
+            { fromProjectToModule =
+                Rule.initContextCreator toModuleContext
+                    |> Rule.withModuleNameLookupTable
+            , fromModuleToProject =
+                Rule.initContextCreator toProjectContext
+                    |> Rule.withMetadata
+            , foldProjectContexts = foldProjectContexts
+            }
+        |> Rule.fromProjectRuleSchema
+
+
+foldProjectContexts : ProjectContext -> ProjectContext -> ProjectContext
+foldProjectContexts newContext previousContext =
+    { exposedDeclarations = Dict.union previousContext.exposedDeclarations newContext.exposedDeclarations
+    }
+
+
+moduleVisitor : Rule.ModuleRuleSchema moduleSchemaState ModuleContext -> Rule.ModuleRuleSchema { moduleSchemaState | hasAtLeastOneVisitor : () } ModuleContext
+moduleVisitor moduleSchema =
+    moduleSchema
         |> Rule.withImportVisitor importVisitor
+        |> Rule.withModuleDefinitionVisitor moduleDefinitionVisitor
         |> Rule.withDeclarationListVisitor addDeclarationsToContext
         |> Rule.withDeclarationEnterVisitor declarationVisitor
         |> Rule.withExpressionEnterVisitor todoExpressionVisitor
-        |> Rule.fromModuleRuleSchema
 
 
-type alias Context =
+moduleDefinitionVisitor : Node Module -> ModuleContext -> ( List (Error {}), ModuleContext )
+moduleDefinitionVisitor node moduleContext =
+    ( []
+    , { moduleContext
+        | toExpose = Module.exposingList (Node.value node)
+      }
+    )
+
+
+type alias ModuleContext =
     { debugImported : DebugImported
     , localContext : LocalContext
     , localDeclarations : List (Node Declaration)
-
-    -- , externalDeclarations : List (Node Declaration)
-    , externalDeclarations : List String
+    , toExpose : Exposing
+    , exposedDeclarations : List (Node Declaration)
+    , externalDeclarations : Dict String (List (Node Declaration))
     , lookupTable : ModuleNameLookupTable
     }
 
@@ -151,27 +184,74 @@ type LocalContext
     | FuncDec Function
 
 
+type alias ProjectContext =
+    { exposedDeclarations : Dict String (List (Node Declaration))
+    }
+
+
 
 -- | Expr Function Expression
 
 
-initialContext : Rule.ContextCreator () Context
-initialContext =
-    Rule.initContextCreator
-        (\lookupTable () ->
-            { debugImported = DebugTodoWasNotImported
-            , localContext = NoLocalContext
-            , localDeclarations = []
-            , externalDeclarations = []
-            , lookupTable = lookupTable
-            }
-        )
-        |> Rule.withModuleNameLookupTable
+toProjectContext : Rule.Metadata -> ModuleContext -> ProjectContext
+toProjectContext metadata moduleContext =
+    { exposedDeclarations = Dict.singleton (String.join "." (Rule.moduleNameFromMetadata metadata)) moduleContext.exposedDeclarations
+    }
 
 
-addDeclarationsToContext : List (Node Declaration) -> Context -> ( List (Error {}), Context )
+toModuleContext : ModuleNameLookupTable -> ProjectContext -> ModuleContext
+toModuleContext lookupTable projectContext =
+    { debugImported = DebugTodoWasNotImported
+    , localContext = NoLocalContext
+    , localDeclarations = []
+    , toExpose = Exposing.All { start = { row = 0, column = 0 }, end = { row = 0, column = 0 } }
+    , exposedDeclarations = []
+    , externalDeclarations = projectContext.exposedDeclarations
+    , lookupTable = lookupTable
+    }
+
+
+addDeclarationsToContext : List (Node Declaration) -> ModuleContext -> ( List (Error {}), ModuleContext )
 addDeclarationsToContext declarations context =
-    ( [], { context | localDeclarations = declarations } )
+    ( []
+    , { context
+        | localDeclarations = declarations
+        , exposedDeclarations =
+            case context.toExpose of
+                Exposing.All _ ->
+                    declarations
+
+                Exposing.Explicit exposedValues ->
+                    List.filterMap
+                        (\exposedNode ->
+                            case Node.value exposedNode of
+                                Exposing.TypeExpose { name, open } ->
+                                    case open of
+                                        Nothing ->
+                                            Nothing
+
+                                        Just _ ->
+                                            listFindBy
+                                                (\declarationNode ->
+                                                    case Node.value declarationNode of
+                                                        Declaration.CustomTypeDeclaration customType ->
+                                                            if Node.value customType.name == name then
+                                                                Just declarationNode
+
+                                                            else
+                                                                Nothing
+
+                                                        _ ->
+                                                            Nothing
+                                                )
+                                                declarations
+
+                                _ ->
+                                    Nothing
+                        )
+                        exposedValues
+      }
+    )
 
 
 type DebugImported
@@ -179,64 +259,36 @@ type DebugImported
     | DebugTodoWasImported
 
 
-importVisitor : Node Import -> Context -> ( List (Error {}), Context )
+importVisitor : Node Import -> ModuleContext -> ( List (Error {}), ModuleContext )
 importVisitor node context =
-    let
-        newContext : Context
-        newContext =
-            case ( Node.value node |> .moduleName |> Node.value, (Node.value node).exposingList |> Maybe.map Node.value ) of
-                ( [ "Debug" ], Just (Exposing.All _) ) ->
-                    { context | debugImported = DebugTodoWasImported }
-
-                ( [ "Debug" ], Just (Exposing.Explicit exposedFunctions) ) ->
-                    let
-                        isTodoFunction : Node Exposing.TopLevelExpose -> Bool
-                        isTodoFunction exposeNode =
-                            case Node.value exposeNode of
-                                Exposing.FunctionExpose "todo" ->
-                                    True
-
-                                _ ->
-                                    False
-                    in
-                    if List.any isTodoFunction exposedFunctions then
-                        { context | debugImported = DebugTodoWasImported }
-
-                    else
-                        { context | debugImported = DebugTodoWasNotImported }
-
-                _ ->
-                    { context | debugImported = DebugTodoWasNotImported }
-
-        newExternalDeclarations : List String
-        newExternalDeclarations =
-            case (Node.value node).exposingList of
-                Nothing ->
-                    []
-
-                Just exposingNode ->
-                    case Node.value exposingNode of
-                        Exposing.All _ ->
-                            []
-
-                        Exposing.Explicit exposed ->
-                            List.filterMap
-                                (\exposedNode ->
-                                    case Node.value exposedNode of
-                                        Exposing.TypeExpose { name } ->
-                                            Just name
-
-                                        _ ->
-                                            Nothing
-                                )
-                                exposed
-    in
     ( []
-    , { newContext | externalDeclarations = newExternalDeclarations ++ context.externalDeclarations }
+    , case ( Node.value node |> .moduleName |> Node.value, (Node.value node).exposingList |> Maybe.map Node.value ) of
+        ( [ "Debug" ], Just (Exposing.All _) ) ->
+            { context | debugImported = DebugTodoWasImported }
+
+        ( [ "Debug" ], Just (Exposing.Explicit exposedFunctions) ) ->
+            let
+                isTodoFunction : Node Exposing.TopLevelExpose -> Bool
+                isTodoFunction exposeNode =
+                    case Node.value exposeNode of
+                        Exposing.FunctionExpose "todo" ->
+                            True
+
+                        _ ->
+                            False
+            in
+            if List.any isTodoFunction exposedFunctions then
+                { context | debugImported = DebugTodoWasImported }
+
+            else
+                { context | debugImported = DebugTodoWasNotImported }
+
+        _ ->
+            { context | debugImported = DebugTodoWasNotImported }
     )
 
 
-declarationVisitor : Node Declaration -> Context -> ( List (Error {}), Context )
+declarationVisitor : Node Declaration -> ModuleContext -> ( List (Error {}), ModuleContext )
 declarationVisitor node context =
     case Node.value node of
         Declaration.FunctionDeclaration func ->
@@ -246,7 +298,7 @@ declarationVisitor node context =
             ( [], context )
 
 
-todoExpressionVisitor : Node Expression -> Context -> ( List (Error {}), Context )
+todoExpressionVisitor : Node Expression -> ModuleContext -> ( List (Error {}), ModuleContext )
 todoExpressionVisitor node context =
     case ( context.debugImported, context.localContext, Node.value node ) of
         ( DebugTodoWasImported, FuncDec func, Expression.Application [ maybeTodoNode, maybePruneNode ] ) ->
@@ -290,7 +342,7 @@ unpruneable todoFuncExposed =
         "Debug.todo \":unpruneable\""
 
 
-guessFunctionPruning : Bool -> Node Expression -> Context -> Function -> Error {}
+guessFunctionPruning : Bool -> Node Expression -> ModuleContext -> Function -> Error {}
 guessFunctionPruning todoFuncExposed node context func =
     Rule.errorWithFix
         { message = "Pruning..."
@@ -322,7 +374,7 @@ guessFunctionPruning todoFuncExposed node context func =
         ]
 
 
-guessFunctionTypePrunig : Context -> Bool -> Function -> Node TypeAnnotation -> String
+guessFunctionTypePrunig : ModuleContext -> Bool -> Function -> Node TypeAnnotation -> String
 guessFunctionTypePrunig context todoFuncExposed func inTypeAnnotation =
     case Node.value inTypeAnnotation of
         TypeAnnotation.Typed typeNode _ ->
@@ -352,19 +404,24 @@ guessFunctionTypePrunig context todoFuncExposed func inTypeAnnotation =
                         _ ->
                             unpruneable todoFuncExposed
 
-                ( ( moduleName, typeName ), argToMatch :: _ ) ->
+                ( ( _, typeName ), argToMatch :: _ ) ->
                     let
                         typeDeclaration : Maybe Type
                         typeDeclaration =
                             case ModuleNameLookupTable.moduleNameFor context.lookupTable typeNode of
                                 Just [] ->
-                                    findDec context typeName
+                                    findDec context.localDeclarations typeName
 
                                 Nothing ->
-                                    findDec context typeName
+                                    findDec context.localDeclarations typeName
 
                                 Just modName ->
-                                    Debug.todo ""
+                                    case Dict.get (String.join "." modName) context.externalDeclarations of
+                                        Nothing ->
+                                            Nothing
+
+                                        Just externalDeclarations ->
+                                            findDec externalDeclarations typeName
                     in
                     case ( typeDeclaration, Node.value argToMatch ) of
                         ( Just declaration, Pattern.VarPattern arg ) ->
@@ -411,7 +468,7 @@ guessFunctionTypePrunig context todoFuncExposed func inTypeAnnotation =
             unpruneable todoFuncExposed
 
 
-guessTypedPruning : Context -> Bool -> Node ( ModuleName, String ) -> String
+guessTypedPruning : ModuleContext -> Bool -> Node ( ModuleName, String ) -> String
 guessTypedPruning context todoFuncExposed typeNode =
     case Node.value typeNode of
         ( _, "Int" ) ->
@@ -426,8 +483,8 @@ guessTypedPruning context todoFuncExposed typeNode =
             unpruneable todoFuncExposed
 
 
-findDec : Context -> String -> Maybe Type
-findDec context typeName =
+findDec : List (Node Declaration) -> String -> Maybe Type
+findDec declarations typeName =
     listFindBy
         (\declarationNode ->
             case Node.value declarationNode of
@@ -441,7 +498,7 @@ findDec context typeName =
                 _ ->
                     Nothing
         )
-        context.localDeclarations
+        declarations
 
 
 listFindBy : (a -> Maybe b) -> List a -> Maybe b

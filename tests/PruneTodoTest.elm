@@ -264,4 +264,38 @@ a dir = case dir of
                             ]
                           )
                         ]
+        , test """shouldn't prune a function declaration that takes an imported custom type when the constructors aren't available""" <|
+            \() ->
+                [ """module Other exposing (Direction)
+
+type Direction
+    = Up Int
+    | Down String Int
+    | Left
+    | Right Direction Direction Direction
+""", """module NeedsPruning exposing (..)
+
+import Other exposing (Direction(..))
+
+a : Direction -> String
+a dir = Debug.todo ":prune"
+""" ]
+                    |> Review.Test.runOnModules rule
+                    |> Review.Test.expectErrorsForModules
+                        [ ( "NeedsPruning"
+                          , [ Review.Test.error
+                                { message = "Pruning..."
+                                , details = [ "Prune code here?" ]
+                                , under = "Debug.todo \":prune\""
+                                }
+                                |> Review.Test.whenFixed """module NeedsPruning exposing (..)
+
+import Other exposing (Direction(..))
+
+a : Direction -> String
+a dir = Debug.todo ":unpruneable"
+"""
+                            ]
+                          )
+                        ]
         ]
